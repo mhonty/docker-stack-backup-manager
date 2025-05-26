@@ -226,25 +226,29 @@ for name in "${STACKS_NAMES[@]}"; do
       echo -e "\t\t[${RED}✗${NC}]${RED} Database container '${DB_CONTAINER}' does not exist. Skipping database backup.${NC}"
       HAS_ERRORS=true
     else
-      DB_EXISTS=$(docker exec "$DB_CONTAINER" sh -c \
-        "mysql -u${DB_USER} -p${DB_PASS} -e \"SHOW DATABASES LIKE '${db}';\" 2>/dev/null | grep -w '${db}' || true")
-      if [[ -z "$DB_EXISTS" ]]; then
-        echo -e "\t\t[${RED}✗${NC}]${RED} Database '${db}' does not exist in '${DB_CONTAINER}' or the credentials are not valid. Skipping.${NC}"
-        HAS_ERRORS=true
-      else
         for db in "${DBS[@]}"; do
-          DUMP_FILE="${WORKDIR}/db_${db}.sql"
+          DB_EXISTS=$(bash -c '
+            SHELL_BIN=$(docker exec "$1" sh -c "command -v bash || command -v sh")
+            QUERY_BIN=$(docker exec "$1" "$SHELL_BIN" -c "command -v mariadb || command -v mysql")
+            docker exec "$1" "$SHELL_BIN" -c "\"$QUERY_BIN\" -u\$0 -p\$1 -e \"SHOW DATABASES LIKE '\''$2'\'';\"" \
+              "$2" "$3" "$4" 2>/dev/null | grep -w "$4" || true
+          ' _ "$DB_CONTAINER" "$DB_USER" "$DB_PASS" "$db")
+          if [[ -z "$DB_EXISTS" ]]; then
+            echo -e "\t\t[${RED}✗${NC}]${RED} Database '${db}' does not exist in '${DB_CONTAINER}' or the credentials are not valid. Skipping.${NC}"
+            HAS_ERRORS=true
+          else
+            DUMP_FILE="${WORKDIR}/db_${db}.sql"
 
-          run_with_spinner $'\t'"Dumping database ${db}" \
-            bash -c '
-              SHELL_BIN=$(docker exec "$1" sh -c "command -v bash || command -v sh")
-              DUMP_BIN=$(docker exec "$1" "$SHELL_BIN" -c "command -v mariadb-dump || command -v mysqldump")
-              docker exec "$1" "$SHELL_BIN" -c "\"$DUMP_BIN\" -u\$0 -p\$1 --databases \$2" "$2" "$3" "$4" > "$5"
-            ' _ "$DB_CONTAINER" "$DB_USER" "$DB_PASS" "$db" "$DUMP_FILE"
+            run_with_spinner $'\t'"Dumping database ${db}" \
+              bash -c '
+                SHELL_BIN=$(docker exec "$1" sh -c "command -v bash || command -v sh")
+                DUMP_BIN=$(docker exec "$1" "$SHELL_BIN" -c "command -v mariadb-dump || command -v mysqldump")
+                docker exec "$1" "$SHELL_BIN" -c "\"$DUMP_BIN\" -u\$0 -p\$1 --databases \$2" "$2" "$3" "$4" > "$5"
+              ' _ "$DB_CONTAINER" "$DB_USER" "$DB_PASS" "$db" "$DUMP_FILE"
+          fi
         done
       fi
     fi
-  fi
 
   run_with_spinner "Creating final ZIP archive" \
     bash -c "cd '$WORKDIR' && zip -rq '$BACKUP_DEST/last/$ZIP_NAME' ."
