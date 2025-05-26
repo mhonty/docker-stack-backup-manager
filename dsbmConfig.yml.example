@@ -1,0 +1,41 @@
+# ------------------------------------------------------------------------------
+# Docker Stack Backup Manager - Example Configuration
+# ------------------------------------------------------------------------------
+# Copy this file to /etc/dsbm/dsbmConfig.yml and customize as needed.
+# ------------------------------------------------------------------------------
+
+global:
+  backup_path: /var/backups/dsbm       # Destination path for all backups (required)
+  keep_days: 14                        # Days to keep old backups (required)
+  exclude_paths:                      # Optional: Patterns to exclude from volume backups
+    - "*.log"
+    - "*.log.*"
+    - "*.zip"
+    - ".git"
+    - ".vscode"
+    - "log"
+    - "*/log"
+
+stacks:
+  - stack_name: my-stack                     # Required: Unique identifier
+    stack_dir: /opt/docker/my-stack          # Required: Path to stack directory
+
+    # Optional: List of Docker volumes to back up
+    volumes:
+      - mystack_appdata
+      - mystack_assets
+
+    # Optional: Define ONLY if 'dbs' is specified
+    db_container: mystack_db                 # Required if 'dbs' is present: container name
+    db_user: root                            # Required if 'dbs' is present
+    db_pass: examplepassword                 # Required if 'dbs' is present
+
+    # Optional: List of databases to dump (requires db_container, db_user and db_pass)
+    dbs:
+      - mystack_db
+      - mystack_logs
+
+  - stack_name: stateless-app
+    stack_dir: /opt/docker/stateless-app
+
+    # This stack has no volumes or databases; fields omitted entirely
