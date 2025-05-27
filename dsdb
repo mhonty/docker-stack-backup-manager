@@ -11,6 +11,7 @@
 # - Optimized for integration with external backup services.
 #
 # Author: Pedro Montalvo
+# Version: 1.1.0
 # Date: 2025-05-26
 # License: MIT
 # -----------------------------------------------------------------------------
@@ -18,15 +19,64 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-tput civis 2>/dev/null || true
-trap 'tput cnorm 2>/dev/null || true' EXIT
+VERSION="1.1.0"
 
-GREEN='\e[32m'; 
-RED='\e[31m'; 
-BLUE='\e[34m'; 
-YELLOW='\e[33m';
-NC='\e[0m';
-TITLE=$'\033[30;104m';
+check_db_credentials_defined() {
+  if [[ -z "$DB_USER" || -z "$DB_PASS" ]]; then
+    echo -e "\t[${RED}✗${NC}]${RED} Database credentials (user/password) are not defined. Skipping database backup.${NC}"
+    return 1
+  fi
+  return 0
+}
+
+check_db_container_exists() {
+  if ! docker ps -a --format '{{.Names}}' | grep -q "^${DB_CONTAINER}$"; then
+    echo -e "\t[${RED}✗${NC}]${RED} Database container '${DB_CONTAINER}' does not exist. Skipping database backup.${NC}"
+    return 1
+  fi
+  return 0
+}
+
+get_shell_in_container() {
+  local shell_bin
+  shell_bin=$(docker exec "$DB_CONTAINER" sh -c "command -v bash || command -v sh")
+  if [[ -z "$shell_bin" ]]; then
+    echo -e "\t[${RED}✗${NC}]${RED} No compatible shell found in '${DB_CONTAINER}'. Skipping database backup.${NC}"
+    return 1
+  else
+    echo "$shell_bin"
+    return 0
+  fi
+}
+
+get_db_cli_bin() {
+  local cli_bin
+  cli_bin=$(docker exec "$DB_CONTAINER" "$SHELL_BIN" -c "command -v mariadb || command -v mysql")
+  if [[ -z "$cli_bin" ]]; then
+    echo -e "\t[${RED}✗${NC}]${RED} No compatible database client found in '${DB_CONTAINER}'. Skipping database backup.${NC}"
+    return 1
+  fi
+  echo "$cli_bin"
+  return 0
+}
+
+get_dump_bin() {
+  local dump_bin
+  dump_bin=$(docker exec "$DB_CONTAINER" "$SHELL_BIN" -c "command -v mariadb-dump || command -v mysqldump")
+  if [[ -z "$dump_bin" ]]; then
+    echo -e "\t[${RED}✗${NC}]${RED} No compatible dump utility found in '${DB_CONTAINER}'. Skipping database backup.${NC}"
+    return 1
+  fi
+  echo "$dump_bin"
+  return 0
+}
+
+dump_database() {
+  local db="$1"
+  local outfile="$2"
+  run_with_spinner $'\t'"Dumping database ${db}" \
+    bash -c "docker exec \"$DB_CONTAINER\" \"$SHELL_BIN\" -c '\"$DUMP_BIN\" -u$DB_USER -p$DB_PASS --databases \"$db\"' > \"$outfile\""
+}
 
 run_with_spinner() {
   local message="$1"; shift
@@ -66,9 +116,57 @@ run_with_spinner() {
   trap - SIGINT SIGTERM
 }
 
+GREEN='\e[32m'; 
+RED='\e[31m'; 
+BLUE='\e[34m'; 
+YELLOW='\e[33m';
+NC='\e[0m';
+TITLE=$'\033[30;104m';
+
+if [[ "$#" -gt 1 ]]; then
+  echo -e "${RED}Error: Too many arguments.${NC}"
+  echo -e "Use ${YELLOW}--help${NC} for usage information."
+  exit 1
+fi
+
+if [[ "$#" -eq 1 && "$1" != "--non-interactive" && "$1" != "--version" && "$1" != "--help" ]]; then
+  echo -e "${RED}Error: Invalid argument '${1}'.${NC}"
+  echo -e "Use ${YELLOW}--help${NC} for usage information."
+  exit 1
+fi
+
+if [[ "${1:-}" == "--version" ]]; then
+  echo -e "${BLUE}Docker Stack Backup Manager V ${VERSION}${NC}"
+  exit 0
+fi
+
+if [[ "${1:-}" == "--help" ]]; then
+  echo -e "${BLUE}Docker Stack Backup Manager${NC}"
+  echo
+  echo -e "Usage: $0 [--non-interactive]"
+  echo
+  echo -e "Options:"
+  echo -e "  --non-interactive   Run the backup process without confirmation prompt."
+  echo -e "  --help              Show this help message."
+  echo
+  echo -e "Configuration:"
+  echo -e "  The script uses a YAML configuration file located at:"
+  echo -e "    ${YELLOW}/etc/dsbm/dsbmConfig.yml${NC}"
+  echo
+  echo -e "  An example configuration file is available at:"
+  echo -e "    ${YELLOW}dsbmConfig.yml.example${NC}"
+  echo -e "  Copy and modify it as needed:"
+  echo -e "    ${GREEN}sudo cp dsbmConfig.yml.example /etc/dsbm/dsbmConfig.yml${NC}"
+  echo
+  exit 0
+fi
+
+tput civis 2>/dev/null || true
+trap 'tput cnorm 2>/dev/null || true' EXIT
+
 clear
 
-left="Docker Stack Backup Manager V 1.0.0"
+left="Docker Stack Backup Manager V ${VERSION}"
 right="By Mhonty 2024"
 
 cols=$(tput cols)
@@ -140,11 +238,53 @@ else
   fi
 fi
 
+mapfile -t STACKS_NAMES < <(yq '.stacks[].stack_name' "$CONFIG_FILE")
+
+if [ ${#STACKS_NAMES[@]} -eq 0 ]; then
+  echo -e "${RED}Error: No stacks found in the configuration file.${NC}"
+  exit 1
+fi
+if [[ "${1:-}" != "--non-interactive" ]]; then
+  echo -e "${YELLOW}The following stacks will be processed:${NC}"
+  for name in "${STACKS_NAMES[@]}"; do
+    echo -e "\t- ${name}"
+  done
+    echo  
+    ERROR_INPUT=false  
+    while true; do
+      if $ERROR_INPUT; then
+        echo -e "${RED}Invalid input. Please answer y or n.${NC}"
+        ERROR_INPUT=false
+      else
+        echo
+      fi
+    read -p "Do you want to continue? (y/N): " confirm
+    case "$confirm" in
+      [Yy]) 
+        tput cuu1 && tput el
+        tput cuu1 && tput el
+        break
+        ;;
+      [Nn] | "")
+        clear
+        echo -e "\n${RED}Backup process aborted by user.${NC}"
+        exit 0
+        ;;
+      *)
+        tput cuu1 && tput el
+        tput cuu1 && tput el
+        ERROR_INPUT=true
+        ;;
+    esac
+  done
+fi
+echo -e "${BLUE}Starting backup process...${NC}"
+echo "----------------------------------------------------------------------"
 
 run_with_spinner "Preparing backup directories" \
   bash -c "mkdir -p '$BACKUP_DEST' &&  mkdir -p '$BACKUP_DEST/last' && mkdir -p '$BACKUP_DEST/old' && mv '$BACKUP_DEST/last'/* '$BACKUP_DEST/old/' 2>/dev/null || true"
 
-mapfile -t STACKS_NAMES < <(yq '.stacks[].stack_name' "$CONFIG_FILE")
+
 mapfile -t EXCLUDES < <(yq '.global.exclude_paths // [] | .[]' "$CONFIG_FILE")
 exclude_args=""
 for ex in "${EXCLUDES[@]}"; do
@@ -221,34 +361,26 @@ for name in "${STACKS_NAMES[@]}"; do
   if [ ${#DBS[@]} -eq 0 ]; then
     echo -e "\t[⚠️ ] No databases to backup."
   else
-    echo -e "\tBacking up databases:"
-    if ! docker ps -a --format '{{.Names}}' | grep -q "^${DB_CONTAINER}$"; then
-      echo -e "\t\t[${RED}✗${NC}]${RED} Database container '${DB_CONTAINER}' does not exist. Skipping database backup.${NC}"
+    if  ! check_db_container_exists || 
+        ! check_db_credentials_defined || 
+        ! SHELL_BIN=$(get_shell_in_container) ||
+        ! DB_CLI_BIN=$(get_db_cli_bin) ||
+        ! DUMP_BIN=$(get_dump_bin); then
       HAS_ERRORS=true
     else
-        for db in "${DBS[@]}"; do
-          DB_EXISTS=$(bash -c '
-            SHELL_BIN=$(docker exec "$1" sh -c "command -v bash || command -v sh")
-            QUERY_BIN=$(docker exec "$1" "$SHELL_BIN" -c "command -v mariadb || command -v mysql")
-            docker exec "$1" "$SHELL_BIN" -c "\"$QUERY_BIN\" -u\$0 -p\$1 -e \"SHOW DATABASES LIKE '\''$2'\'';\"" \
-              "$2" "$3" "$4" 2>/dev/null | grep -w "$4" || true
-          ' _ "$DB_CONTAINER" "$DB_USER" "$DB_PASS" "$db")
-          if [[ -z "$DB_EXISTS" ]]; then
-            echo -e "\t\t[${RED}✗${NC}]${RED} Database '${db}' does not exist in '${DB_CONTAINER}' or the credentials are not valid. Skipping.${NC}"
-            HAS_ERRORS=true
-          else
-            DUMP_FILE="${WORKDIR}/db_${db}.sql"
-
-            run_with_spinner $'\t'"Dumping database ${db}" \
-              bash -c '
-                SHELL_BIN=$(docker exec "$1" sh -c "command -v bash || command -v sh")
-                DUMP_BIN=$(docker exec "$1" "$SHELL_BIN" -c "command -v mariadb-dump || command -v mysqldump")
-                docker exec "$1" "$SHELL_BIN" -c "\"$DUMP_BIN\" -u\$0 -p\$1 --databases \$2" "$2" "$3" "$4" > "$5"
-              ' _ "$DB_CONTAINER" "$DB_USER" "$DB_PASS" "$db" "$DUMP_FILE"
-          fi
-        done
-      fi
+      echo -e "\tBacking up databases:"
+      for db in "${DBS[@]}"; do
+        DB_EXISTS=$(docker exec "$DB_CONTAINER" "$SHELL_BIN" -c "\"$DB_CLI_BIN\" -u$DB_USER -p$DB_PASS -e \"SHOW DATABASES LIKE '$db';\" 2>/dev/null | grep -w \"$db\" || true")
+        if [[ -z "$DB_EXISTS" ]]; then
+          echo -e "\t\t[${RED}✗${NC}]${RED} Database '${db}' does not exist or credentials are invalid. Skipping.${NC}"
+          HAS_ERRORS=true
+        else
+          DUMP_FILE="${WORKDIR}/db_${db}.sql"
+          dump_database "$db" "$DUMP_FILE"
+        fi
+      done
     fi
+  fi
 
   run_with_spinner "Creating final ZIP archive" \
     bash -c "cd '$WORKDIR' && zip -rq '$BACKUP_DEST/last/$ZIP_NAME' ."
@@ -275,4 +407,3 @@ else
   echo -e "${GREEN}All backups completed successfully. Exit status: 0${NC}"
   exit 0
 fi
-
