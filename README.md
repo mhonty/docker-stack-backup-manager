@@ -65,6 +65,18 @@ The script will:
 - Store the latest backup under `$backup_path/last`
 - Rotate old backups to `$backup_path/old`
 
+## Exit Codes
+
+`DSBM` returns the following exit codes to indicate the result of the backup operation:
+
+| Code | Meaning                             | Notes                                                   |
+|------|-------------------------------------|----------------------------------------------------------|
+| 0    | Success                             | All stacks backed up successfully without warnings.     |
+| 1    | Critical failure                    | All stacks failed to back up.                           |
+| 2    | Partial success or non-critical errors | At least one stack failed, or some volumes/databases were skipped. |
+
+This allows DSBM to be used safely in automation scripts, cronjobs, or external monitoring systems.
+
 ---
 
 ## ⚙️ Configuration
