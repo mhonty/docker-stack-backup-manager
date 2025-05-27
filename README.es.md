@@ -65,6 +65,18 @@ El script:
 - Guarda el último backup en `$backup_path/last`
 - Mueve copias anteriores a `$backup_path/old` y borra las que superen el número de días indicado
 
+## Códigos de salida
+
+`DSBM` devuelve los siguientes códigos de salida para indicar el resultado de la operación de respaldo:
+
+| Código | Significado                           | Detalles                                                   |
+|--------|----------------------------------------|-------------------------------------------------------------|
+| 0      | Éxito                                  | Todos los stacks fueron respaldados sin errores ni avisos. |
+| 1      | Error crítico                          | Todos los stacks fallaron al intentar respaldarse.         |
+| 2      | Éxito parcial o errores no críticos    | Al menos un stack falló, o se omitieron volúmenes/bases de datos. |
+
+Esto permite que `DSBM` se utilice de forma segura en scripts automatizados, tareas programadas (`cronjobs`) o sistemas de monitorización externos.
+
 ---
 
 ## ⚙️ Configuración
